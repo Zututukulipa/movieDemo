@@ -1,15 +1,49 @@
+<#
+.SYNOPSIS
+  PowerShell adaptation of WinPEAS.exe / WinPeas.bat
+.DESCRIPTION
+  For the legal enumeration of windows based computers that you either own or are approved to run this script on
+.EXAMPLE
+  # Default - normal operation with username/password audit in drives/registry
+  .\winPeas.ps1
+
+  # Include Excel files in search: .xls, .xlsx, .xlsm
+  .\winPeas.ps1 -Excel
+
+  # Full audit - normal operation with APIs / Keys / Tokens
+  ## This will produce false positives ## 
+  .\winPeas.ps1 -FullCheck 
+
+  # Add Time stamps to each command
+  .\winPeas.ps1 -TimeStamp
+
+.NOTES
+  Version:                    1.3
+  PEASS-ng Original Author:   PEASS-ng
+  winPEAS.ps1 Author:         @RandolphConley
+  Creation Date:              10/4/2022
+  Website:                    https://github.com/peass-ng/PEASS-ng
+
+  TESTED: PoSh 5,7
+  UNTESTED: PoSh 3,4
+  NOT FULLY COMPATIBLE: PoSh 2 or lower
+#>
+
+######################## FUNCTIONS ########################
 
 [CmdletBinding()]
 param(
   [switch]$TimeStamp,
-  [switch]$FCheck,
-  [switch]$Hehcel
+  [switch]$FullCheck,
+  [switch]$Excel
 )
 
+# Gather KB from all patches installed
 function returnHotFixID {
   param(
     [string]$title
   )
+  # Match on KB or if patch does not have a KB, return end result
   if (($title | Select-String -AllMatches -Pattern 'KB(\d{4,6})').Matches.Value) {
     return (($title | Select-String -AllMatches -Pattern 'KB(\d{4,6})').Matches.Value)
   }
@@ -21,18 +55,19 @@ function returnHotFixID {
 function Start-ACLCheck {
   param(
     $Target, $ServiceName)
+  # Gather ACL of object
   if ($null -ne $target) {
     try {
       $ACLObject = Get-Acl $target -ErrorAction SilentlyContinue
     }
     catch { $null }
     
-    
+    # If Found, Evaluate Permissions
     if ($ACLObject) { 
       $Identity = @()
       $Identity += "$env:COMPUTERNAME\$env:USERNAME"
       if ($ACLObject.Owner -like $Identity ) { Write-Host "$Identity has ownership of $Target" -ForegroundColor Red }
-      
+      # This should now work for any language. Command runs whoami group, removes the first two line of output, converts from csv to object, but adds "group name" to the first column.
       whoami.exe /groups /fo csv | select-object -skip 2 | ConvertFrom-Csv -Header 'group name' | Select-Object -ExpandProperty 'group name' | ForEach-Object { $Identity += $_ }
       $IdentityFound = $false
       foreach ($i in $Identity) {
@@ -63,7 +98,7 @@ function Start-ACLCheck {
           Write-Host -ForegroundColor red "Identity $($permission.IdentityReference) has '$userPermission' perms for $Target"
         }
       }    
-      
+      # Identity Found Check - If False, loop through and stop at root of drive
       if ($IdentityFound -eq $false) {
         if ($Target.Length -gt 3) {
           $Target = Split-Path $Target
@@ -72,7 +107,7 @@ function Start-ACLCheck {
       }
     }
     else {
-      
+      # If not found, split path one level and Check again
       $Target = Split-Path $Target
       Start-ACLCheck $Target $ServiceName
     }
@@ -129,9 +164,9 @@ function Search-Excel {
       [string]$Source,
       [parameter(Mandatory)]
       [string]$SearchText
-      
+      #You can specify wildcard characters (*, ?)
   )
-  $Hehcel = New-Object -ComObject Excel.Application
+  $Excel = New-Object -ComObject Excel.Application
   Try {
       $Source = Convert-Path $Source
   }
@@ -139,16 +174,16 @@ function Search-Excel {
       Write-Warning "Unable locate full path of $($Source)"
       BREAK
   }
-  $Workbook = $Hehcel.Workbooks.Open($Source)
+  $Workbook = $Excel.Workbooks.Open($Source)
   ForEach ($Worksheet in @($Workbook.Sheets)) {
-      
+      # Find Method https://msdn.microsoft.com/en-us/vba/excel-vba/articles/range-find-method-excel
       $Found = $WorkSheet.Cells.Find($SearchText)
       If ($Found) {
         try{  
-          
+          # Address Method https://msdn.microsoft.com/en-us/vba/excel-vba/articles/range-address-property-excel
           Write-Host "Pattern: '$SearchText' found in $source" -ForegroundColor Blue
           $BeginAddress = $Found.Address(0,0,1,1)
-          
+          #Initial Found Cell
           New-Object -TypeName PSObject -Property ([Ordered]@{
               WorkSheet = $Worksheet.Name
               Column = $Found.Column
@@ -173,24 +208,27 @@ function Search-Excel {
           } Until ($False)
         }
         catch {
-          
+          # Null expression in Found
         }
       }
-      
-      
-      
+      #Else {
+      #    Write-Warning "[$($WorkSheet.Name)] Nothing Found!"
+      #}
   }
   try{
   $workbook.close($False)
-  [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject([System.__ComObject]$Hehcel)
+  [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject([System.__ComObject]$excel)
   [gc]::Collect()
   [gc]::WaitForPendingFinalizers()
   }
   catch{
-    
+    #Usually an RPC error
   }
   Remove-Variable excel -ErrorAction SilentlyContinue
 }
+
+#Get-CIMInstace/Get-WMIObject 'Win32_Product' calls kick off silent repairs on some programs causing potential issues after/while running this & doesn't always return a complete list.
+#Allegedly 'Win32reg_AddRemovePrograms' works fine now but this method ensures safety of target systems.
 function Get-InstalledApplications {
 [cmdletbinding()]
 param(
@@ -230,7 +268,40 @@ function Write-Color([String[]]$Text, [ConsoleColor[]]$Color) {
   Write-Host
 }
 
-Write-Color "          WPEXS" -Color Green
+
+#Write-Color "    ((,.,/((((((((((((((((((((/,  */" -Color Green
+Write-Color ",/*,..*(((((((((((((((((((((((((((((((((," -Color Green
+Write-Color ",*/((((((((((((((((((/,  .*//((//**, .*((((((*" -Color Green
+Write-Color "((((((((((((((((", "* *****,,,", "\########## .(* ,((((((" -Color Green, Blue, Green
+Write-Color "(((((((((((", "/*******************", "####### .(. ((((((" -Color Green, Blue, Green
+Write-Color "(((((((", "/******************", "/@@@@@/", "***", "\#######\((((((" -Color Green, Blue, White, Blue, Green
+Write-Color ",,..", "**********************", "/@@@@@@@@@/", "***", ",#####.\/(((((" -Color Green, Blue, White, Blue, Green
+Write-Color ", ,", "**********************", "/@@@@@+@@@/", "*********", "##((/ /((((" -Color Green, Blue, White, Blue, Green
+Write-Color "..(((##########", "*********", "/#@@@@@@@@@/", "*************", ",,..((((" -Color Green, Blue, White, Blue, Green
+Write-Color ".(((################(/", "******", "/@@@@@/", "****************", ".. /((" -Color Green, Blue, White, Blue, Green
+Write-Color ".((########################(/", "************************", "..*(" -Color Green, Blue, Green
+Write-Color ".((#############################(/", "********************", ".,(" -Color Green, Blue, Green
+Write-Color ".((##################################(/", "***************", "..(" -Color Green, Blue, Green
+Write-Color ".((######################################(/", "***********", "..(" -Color Green, Blue, Green
+Write-Color ".((######", "(,.***.,(", "###################", "(..***", "(/*********", "..(" -Color Green, Green, Green, Green, Blue, Green
+Write-Color ".((######*", "(####((", "###################", "((######", "/(********", "..(" -Color Green, Green, Green, Green, Blue, Green
+Write-Color ".((##################", "(/**********(", "################(**...(" -Color Green, Green, Green
+Write-Color ".(((####################", "/*******(", "###################.((((" -Color Green, Green, Green
+Write-Color ".(((((############################################/  /((" -Color Green
+Write-Color "..(((((#########################################(..(((((." -Color Green
+Write-Color "....(((((#####################################( .((((((." -Color Green
+Write-Color "......(((((#################################( .(((((((." -Color Green
+Write-Color "(((((((((. ,(############################(../(((((((((." -Color Green
+Write-Color "  (((((((((/,  ,####################(/..((((((((((." -Color Green
+Write-Color "        (((((((((/,.  ,*//////*,. ./(((((((((((." -Color Green
+Write-Color "           (((((((((((((((((((((((((((/" -Color Green
+Write-Color "          by PEASS-ng & RandolphConley" -Color Green
+
+######################## VARIABLES ########################
+
+# Manually added Regex search strings from https://github.com/peass-ng/PEASS-ng/blob/master/build_lists/sensitive_files.yaml
+
+# Set these values to true to add them to the regex search by default
 $password = $true
 $username = $true
 $webAuth = $true
@@ -253,8 +324,8 @@ if ($password) {
   $regexSearch.add("sha1", "(^|[^a-zA-Z0-9])[a-fA-F0-9]{40}([^a-zA-Z0-9]|$)")
   $regexSearch.add("sha256", "(^|[^a-zA-Z0-9])[a-fA-F0-9]{64}([^a-zA-Z0-9]|$)")
   $regexSearch.add("sha512", "(^|[^a-zA-Z0-9])[a-fA-F0-9]{128}([^a-zA-Z0-9]|$)")  
-  
-  
+  # This does not work correctly
+  #$regexSearch.add("Base32", "(?:[A-Z2-7]{8})*(?:[A-Z2-7]{2}={6}|[A-Z2-7]{4}={4}|[A-Z2-7]{5}={3}|[A-Z2-7]{7}=)?")
   $regexSearch.add("Base64", "(eyJ|YTo|Tzo|PD[89]|aHR0cHM6L|aHR0cDo|rO0)[a-zA-Z0-9+\/]+={0,2}")
 }
 
@@ -266,7 +337,7 @@ if ($username) {
   $regexSearch.add("Net user add", "net user .+ /add")
 }
 
-if ($FCheck) {
+if ($FullCheck) {
   $regexSearch.add("Artifactory API Token", "AKC[a-zA-Z0-9]{10,}")
   $regexSearch.add("Artifactory Password", "AP[0-9ABCDEF][a-zA-Z0-9]{8,}")
   $regexSearch.add("Adafruit API Key", "([a-z0-9_-]{32})")
@@ -456,32 +527,53 @@ if ($webAuth) {
   $regexSearch.add("Generiac API tokens search", "(access_key|access_token|admin_pass|admin_user|algolia_admin_key|algolia_api_key|alias_pass|alicloud_access_key| amazon_secret_access_key|amazonaws|ansible_vault_password|aos_key|api_key|api_key_secret|api_key_sid|api_secret| api.googlemaps AIza|apidocs|apikey|apiSecret|app_debug|app_id|app_key|app_log_level|app_secret|appkey|appkeysecret| application_key|appsecret|appspot|auth_token|authorizationToken|authsecret|aws_access|aws_access_key_id|aws_bucket| aws_key|aws_secret|aws_secret_key|aws_token|AWSSecretKey|b2_app_key|bashrc password| bintray_apikey|bintray_gpg_password|bintray_key|bintraykey|bluemix_api_key|bluemix_pass|browserstack_access_key| bucket_password|bucketeer_aws_access_key_id|bucketeer_aws_secret_access_key|built_branch_deploy_key|bx_password|cache_driver| cache_s3_secret_key|cattle_access_key|cattle_secret_key|certificate_password|ci_deploy_password|client_secret| client_zpk_secret_key|clojars_password|cloud_api_key|cloud_watch_aws_access_key|cloudant_password| cloudflare_api_key|cloudflare_auth_key|cloudinary_api_secret|cloudinary_name|codecov_token|conn.login| connectionstring|consumer_key|consumer_secret|credentials|cypress_record_key|database_password|database_schema_test| datadog_api_key|datadog_app_key|db_password|db_server|db_username|dbpasswd|dbpassword|dbuser|deploy_password| digitalocean_ssh_key_body|digitalocean_ssh_key_ids|docker_hub_password|docker_key|docker_pass|docker_passwd| docker_password|dockerhub_password|dockerhubpassword|dot-files|dotfiles|droplet_travis_password|dynamoaccesskeyid| dynamosecretaccesskey|elastica_host|elastica_port|elasticsearch_password|encryption_key|encryption_password| env.heroku_api_key|env.sonatype_password|eureka.awssecretkey)[a-z0-9_ .,<\-]{0,25}(=|>|:=|\|\|:|<=|=>|:).{0,5}['""]([0-9a-zA-Z_=\-]{8,64})['""]")
 }
 
-if($FCheck){$Hehcel = $true}
+if($FullCheck){$Excel = $true}
 
 $regexSearch.add("IPs", "(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)")
 $Drives = Get-PSDrive | Where-Object { $_.Root -like "*:\" }
 $fileExtensions = @("*.xml", "*.txt", "*.conf", "*.config", "*.cfg", "*.ini", ".y*ml", "*.log", "*.bak", "*.xls", "*.xlsx", "*.xlsm")
+
+
+######################## INTRODUCTION ########################
 $stopwatch = [system.diagnostics.stopwatch]::StartNew()
 
-if ($FCheck) {
+if ($FullCheck) {
   Write-Host "**Full Check Enabled. This will significantly increase false positives in registry / folder check for Usernames / Passwords.**"
 }
-
-Write-Host -BackgroundColor Red -ForegroundColor White "ADVISORY: HehPAES - Windows local Privilege Escalation Awesome Script"
-Write-Host -BackgroundColor Red -ForegroundColor White "HehPAES should be used for authorized penetration testing and/or educational purposes only"
+# Introduction    
+Write-Host -BackgroundColor Red -ForegroundColor White "ADVISORY: WinPEAS - Windows local Privilege Escalation Awesome Script"
+Write-Host -BackgroundColor Red -ForegroundColor White "WinPEAS should be used for authorized penetration testing and/or educational purposes only"
 Write-Host -BackgroundColor Red -ForegroundColor White "Any misuse of this software will not be the responsibility of the author or of any other collaborator"
 Write-Host -BackgroundColor Red -ForegroundColor White "Use it at your own networks and/or with the network owner's explicit permission"
+
+
+# Color Scheme Introduction
 Write-Host -ForegroundColor red    "Indicates special privilege over an object or misconfiguration"
 Write-Host -ForegroundColor green  "Indicates protection is enabled or something is well configured"
 Write-Host -ForegroundColor cyan   "Indicates active users"
 Write-Host -ForegroundColor Gray   "Indicates disabled users"
 Write-Host -ForegroundColor yellow "Indicates links"
-Write-Host -ForegroundColor Blue   "Indicates title"Write-Host "You can find a Windows local PE Checklist here: https://book.hacktricks.wiki/en/windows-hardening/checklist-windows-privilege-escalation.html" -ForegroundColor Yellow
+Write-Host -ForegroundColor Blue   "Indicates title"
+
+
+Write-Host "You can find a Windows local PE Checklist here: https://book.hacktricks.wiki/en/windows-hardening/checklist-windows-privilege-escalation.html" -ForegroundColor Yellow
+#write-host  "Creating Dynamic lists, this could take a while, please wait..."
+#write-host  "Loading sensitive_files yaml definitions file..."
+#write-host  "Loading regexes yaml definitions file..."
+
+
+######################## SYSTEM INFORMATION ########################
 
 Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host "====================================||SYSTEM INFORMATION ||===================================="
-"The following information is curated. To get a full list of system information, run the cmdlet get-computerinfo"systeminfo.exe
+"The following information is curated. To get a full list of system information, run the cmdlet get-computerinfo"
+
+#System Info from get-computer info
+systeminfo.exe
+
+
+#Hotfixes installed sorted by date
 Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| WINDOWS HOTFIXES"
@@ -489,15 +581,33 @@ Write-Host "=| Check if windows is vulnerable with Watson https://github.com/ras
 Write-Host "Possible exploits (https://github.com/codingo/OSCP-2/blob/master/Windows/WinPrivCheck.bat)" -ForegroundColor Yellow
 $Hotfix = Get-HotFix | Sort-Object -Descending -Property InstalledOn -ErrorAction SilentlyContinue | Select-Object HotfixID, Description, InstalledBy, InstalledOn
 $Hotfix | Format-Table -AutoSize
+
+
+#Show all unique updates installed
 Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| ALL UPDATES INSTALLED"
-$session = (New-Object -ComObject 'Microsoft.Update.Session')
 
-$history = $session.QueryHistory("", 0, 1000) | Select-Object ResultCode, Date, Title$HotfixUnique = @()$HotFixReturnNum = @()for ($i = 0; $i -lt $history.Count; $i++) {
+
+# 0, and 5 are not used for history
+# See https://msdn.microsoft.com/en-us/library/windows/desktop/aa387095(v=vs.85).aspx
+# Source: https://stackoverflow.com/questions/41626129/how-do-i-get-the-update-history-from-windows-update-in-powershell?utm_medium=organic&utm_source=google_rich_qa&utm_campaign=google_rich_qa
+
+$session = (New-Object -ComObject 'Microsoft.Update.Session')
+# Query the latest 50 updates starting with the first record
+$history = $session.QueryHistory("", 0, 1000) | Select-Object ResultCode, Date, Title
+
+#create an array for unique HotFixes
+$HotfixUnique = @()
+#$HotfixUnique += ($history[0].title | Select-String -AllMatches -Pattern 'KB(\d{4,6})').Matches.Value
+
+$HotFixReturnNum = @()
+#$HotFixReturnNum += 0 
+
+for ($i = 0; $i -lt $history.Count; $i++) {
   $check = returnHotFixID -title $history[$i].Title
   if ($HotfixUnique -like $check) {
-    
+    #Do Nothing
   }
   else {
     $HotfixUnique += $check
@@ -509,7 +619,7 @@ $FinalHotfixList = @()
 $hotfixreturnNum | ForEach-Object {
   $HotFixItem = $history[$_]
   $Result = $HotFixItem.ResultCode
-  
+  # https://learn.microsoft.com/en-us/windows/win32/api/wuapi/ne-wuapi-operationresultcode?redirectedfrom=MSDN
   switch ($Result) {
     1 {
       $Result = "Missing/Superseded"
@@ -533,11 +643,23 @@ $hotfixreturnNum | ForEach-Object {
     Title  = $HotFixItem.Title
   })
 }
-$FinalHotfixList | Format-Table -AutoSizeWrite-Host ""
+$FinalHotfixList | Format-Table -AutoSize
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| Drive Info"
+# Load the System.Management assembly
+Add-Type -AssemblyName System.Management
 
-Add-Type -AssemblyName System.Management$diskSearcher = New-Object System.Management.ManagementObjectSearcher("SELECT * FROM Win32_LogicalDisk WHERE DriveType = 3")$systemDrives = $diskSearcher.Get()foreach ($drive in $systemDrives) {
+# Create a ManagementObjectSearcher to query Win32_LogicalDisk
+$diskSearcher = New-Object System.Management.ManagementObjectSearcher("SELECT * FROM Win32_LogicalDisk WHERE DriveType = 3")
+
+# Get the system drives
+$systemDrives = $diskSearcher.Get()
+
+# Loop through each drive and display its information
+foreach ($drive in $systemDrives) {
   $driveLetter = $drive.DeviceID
   $driveLabel = $drive.VolumeName
   $driveSize = [math]::Round($drive.Size / 1GB, 2)
@@ -548,14 +670,23 @@ Add-Type -AssemblyName System.Management$diskSearcher = New-Object System.Manage
   Write-Output "Size: $driveSize GB"
   Write-Output "Free Space: $driveFreeSpace GB"
   Write-Output ""
-}Write-Host ""
+}
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| Antivirus Detection (attemping to read exclusions as well)"
 WMIC /Node:localhost /Namespace:\\root\SecurityCenter2 Path AntiVirusProduct Get displayName
-Get-ChildItem 'registry::HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions' -ErrorAction SilentlyContinueWrite-Host ""
+Get-ChildItem 'registry::HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions' -ErrorAction SilentlyContinue
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| NET ACCOUNTS Info"
-net accountsWrite-Host ""
+net accounts
+
+######################## REGISTRY SETTING CHECK ########################
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| REGISTRY SETTINGS CHECK"
 
@@ -563,7 +694,7 @@ Write-Host -ForegroundColor Blue "=========|| REGISTRY SETTINGS CHECK"
 Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| Audit Log Settings"
-
+#Check audit registry
 if ((Test-Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit\).Property) {
   Get-Item -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit\
 }
@@ -589,7 +720,10 @@ Write-Host -ForegroundColor Blue "=========|| LAPS Check"
 if (Test-Path 'C:\Program Files\LAPS\CSE\Admpwd.dll') { Write-Host "LAPS dll found on this machine at C:\Program Files\LAPS\CSE\" -ForegroundColor Green }
 elseif (Test-Path 'C:\Program Files (x86)\LAPS\CSE\Admpwd.dll' ) { Write-Host "LAPS dll found on this machine at C:\Program Files (x86)\LAPS\CSE\" -ForegroundColor Green }
 else { Write-Host "LAPS dlls not found on this machine" }
-if ((Get-ItemProperty HKLM:\Software\Policies\Microsoft Services\AdmPwd -ErrorAction SilentlyContinue).AdmPwdEnabled -eq 1) { Write-Host "LAPS registry key found on this machine" -ForegroundColor Green }Write-Host ""
+if ((Get-ItemProperty HKLM:\Software\Policies\Microsoft Services\AdmPwd -ErrorAction SilentlyContinue).AdmPwdEnabled -eq 1) { Write-Host "LAPS registry key found on this machine" -ForegroundColor Green }
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| WDigest Check"
 $WDigest = (Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest).UseLogonCredential
@@ -644,21 +778,27 @@ Write-Host -ForegroundColor Blue "=========|| Additonal Winlogon Credentials Che
 (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon").DefaultPassword
 (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon").AltDefaultDomainName
 (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon").AltDefaultUserName
-(Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon").AltDefaultPasswordWrite-Host ""
+(Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon").AltDefaultPassword
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| RDCMan Settings Check"
 
 if (Test-Path "$env:USERPROFILE\appdata\Local\Microsoft\Remote Desktop Connection Manager\RDCMan.settings") {
   Write-Host "RDCMan Settings Found at: $($env:USERPROFILE)\appdata\Local\Microsoft\Remote Desktop Connection Manager\RDCMan.settings" -ForegroundColor Red
 }
-else { Write-Host "No RDCMan.Settings found." }Write-Host ""
+else { Write-Host "No RDCMan.Settings found." }
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| RDP Saved Connections Check"
 
 Write-Host "HK_Users"
 New-PSDrive -PSProvider Registry -Name HKU -Root HKEY_USERS -ErrorAction SilentlyContinue
 Get-ChildItem HKU:\ -ErrorAction SilentlyContinue | ForEach-Object {
-  
+  # get the SID from output
   $HKUSID = $_.Name.Replace('HKEY_USERS\', "")
   if (Test-Path "registry::HKEY_USERS\$HKUSID\Software\Microsoft\Terminal Server Client\Default") {
     Write-Host "Server Found: $((Get-ItemProperty "registry::HKEY_USERS\$HKUSID\Software\Microsoft\Terminal Server Client\Default" -Name MRU0).MRU0)"
@@ -686,7 +826,10 @@ if (Test-Path HKCU:\SOFTWARE\SimonTatham\PuTTY\Sessions) {
     }
   }
 }
-else { Write-Host "No putty credentials found in HKCU:\SOFTWARE\SimonTatham\PuTTY\Sessions" }Write-Host ""
+else { Write-Host "No putty credentials found in HKCU:\SOFTWARE\SimonTatham\PuTTY\Sessions" }
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| SSH Key Checks"
 Write-Host ""
@@ -699,32 +842,50 @@ Write-Host -ForegroundColor Blue "=========|| Checking Putty SSH KNOWN HOSTS"
 if (Test-Path HKCU:\Software\SimonTatham\PuTTY\SshHostKeys) { 
   Write-Host "$((Get-Item -Path HKCU:\Software\SimonTatham\PuTTY\SshHostKeys).Property)"
 }
-else { Write-Host "No putty ssh keys found" }Write-Host ""
+else { Write-Host "No putty ssh keys found" }
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| Checking for OpenSSH Keys"
 if (Test-Path HKCU:\Software\OpenSSH\Agent\Keys) { Write-Host "OpenSSH keys found. Try this for decryption: https://github.com/ropnop/windows_sshagent_extract" -ForegroundColor Yellow }
-else { Write-Host "No OpenSSH Keys found." }Write-Host ""
+else { Write-Host "No OpenSSH Keys found." }
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| Checking for WinVNC Passwords"
-if (Test-Path "HKCU:\Software\ORL\WinVNC3\Password") { Write-Host " WinVNC found at HKCU:\Software\ORL\WinVNC3\Password" }else { Write-Host "No WinVNC found." }Write-Host ""
+if (Test-Path "HKCU:\Software\ORL\WinVNC3\Password") { Write-Host " WinVNC found at HKCU:\Software\ORL\WinVNC3\Password" }else { Write-Host "No WinVNC found." }
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| Checking for SNMP Passwords"
-if (Test-Path "HKLM:\SYSTEM\CurrentControlSet\Services\SNMP") { Write-Host "SNMP Key found at HKLM:\SYSTEM\CurrentControlSet\Services\SNMP" }else { Write-Host "No SNMP found." }Write-Host ""
+if (Test-Path "HKLM:\SYSTEM\CurrentControlSet\Services\SNMP") { Write-Host "SNMP Key found at HKLM:\SYSTEM\CurrentControlSet\Services\SNMP" }else { Write-Host "No SNMP found." }
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| Checking for TightVNC Passwords"
-if (Test-Path "HKCU:\Software\TightVNC\Server") { Write-Host "TightVNC key found at HKCU:\Software\TightVNC\Server" }else { Write-Host "No TightVNC found." }Write-Host ""
+if (Test-Path "HKCU:\Software\TightVNC\Server") { Write-Host "TightVNC key found at HKCU:\Software\TightVNC\Server" }else { Write-Host "No TightVNC found." }
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| UAC Settings"
 if ((Get-ItemProperty HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System).EnableLUA -eq 1) {
   Write-Host "EnableLUA is equal to 1. Part or all of the UAC components are on."
-  Write-Host "https://book.hacktricks.wiki/en/windows-hardening/authentication-credentials-uac-and-efs/uac-user-account-control.html
+  Write-Host "https://book.hacktricks.wiki/en/windows-hardening/authentication-credentials-uac-and-efs/uac-user-account-control.html#very-basic-uac-bypass-full-file-system-access" -ForegroundColor Yellow
 }
-else { Write-Host "EnableLUA value not equal to 1" }Write-Host ""
+else { Write-Host "EnableLUA value not equal to 1" }
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| Recently Run Commands (WIN+R)"
 
 Get-ChildItem HKU:\ -ErrorAction SilentlyContinue | ForEach-Object {
-  
+  # get the SID from output
   $HKUSID = $_.Name.Replace('HKEY_USERS\', "")
   $property = (Get-Item "HKU:\$_\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\RunMRU" -ErrorAction SilentlyContinue).Property
   $HKUSID | ForEach-Object {
@@ -735,13 +896,19 @@ Get-ChildItem HKU:\ -ErrorAction SilentlyContinue | ForEach-Object {
       }
     }
   }
-}Write-Host ""
+}
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========||HKCU Recently Run Commands"
 $property = (Get-Item "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\RunMRU" -ErrorAction SilentlyContinue).Property
 foreach ($p in $property) {
   Write-Host "$((Get-Item "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\RunMRU" -ErrorAction SilentlyContinue).getValue($p))"
-}Write-Host ""
+}
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| Always Install Elevated Check"
  
@@ -750,14 +917,17 @@ Write-Host "Checking Windows Installer Registry (will populate if the key exists
 if ((Get-ItemProperty HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer -ErrorAction SilentlyContinue).AlwaysInstallElevated -eq 1) {
   Write-Host "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer).AlwaysInstallElevated = 1" -ForegroundColor red
   Write-Host "Try msfvenom msi package to escalate" -ForegroundColor red
-  Write-Host "https://book.hacktricks.wiki/en/windows-hardening/windows-local-privilege-escalation/index.html
+  Write-Host "https://book.hacktricks.wiki/en/windows-hardening/windows-local-privilege-escalation/index.html#metasploit-payloads" -ForegroundColor Yellow
 }
  
 if ((Get-ItemProperty HKCU:\SOFTWARE\Policies\Microsoft\Windows\Installer -ErrorAction SilentlyContinue).AlwaysInstallElevated -eq 1) { 
   Write-Host "HKCU:\SOFTWARE\Policies\Microsoft\Windows\Installer).AlwaysInstallElevated = 1" -ForegroundColor red
   Write-Host "Try msfvenom msi package to escalate" -ForegroundColor red
-  Write-Host "https://book.hacktricks.wiki/en/windows-hardening/windows-local-privilege-escalation/index.html
-}Write-Host ""
+  Write-Host "https://book.hacktricks.wiki/en/windows-hardening/windows-local-privilege-escalation/index.html#metasploit-payloads" -ForegroundColor Yellow
+}
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| PowerShell Info"
 
@@ -766,7 +936,10 @@ Write-Host -ForegroundColor Blue "=========|| PowerShell Info"
 }
 (Get-ItemProperty registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\PowerShell\3\PowerShellEngine).PowerShellVersion | ForEach-Object {
   Write-Host  "PowerShell $_ available"
-}Write-Host ""
+}
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| PowerShell Registry Transcript Check"
 
@@ -816,16 +989,22 @@ if ( Test-Path HKCU:\Wow6432Node\Software\Policies\Microsoft\Windows\PowerShell\
 }
 if ( Test-Path HKLM:\Wow6432Node\Software\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging) {
   Get-Item HKLM:\Wow6432Node\Software\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging
-}Write-Host ""
+}
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| WSUS check for http and UseWAServer = 1, if true, might be vulnerable to exploit"
-Write-Host "https://book.hacktricks.wiki/en/windows-hardening/windows-local-privilege-escalation/index.html
+Write-Host "https://book.hacktricks.wiki/en/windows-hardening/windows-local-privilege-escalation/index.html#wsus" -ForegroundColor Yellow
 if (Test-Path HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate) {
   Get-Item HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate
 }
 if ((Get-ItemProperty HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU -Name "USEWUServer" -ErrorAction SilentlyContinue).UseWUServer) {
   (Get-ItemProperty HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU -Name "USEWUServer").UseWUServer
-}Write-Host ""
+}
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| Internet Settings HKCU / HKLM"
 
@@ -838,21 +1017,33 @@ $property = (Get-Item "HKLM:\Software\Microsoft\Windows\CurrentVersion\Internet 
 foreach ($p in $property) {
   Write-Host "$p - $((Get-Item "HKLM:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -ErrorAction SilentlyContinue).getValue($p))"
 }
+
+
+######################## PROCESS INFORMATION ########################
 Write-Host ""
 if ($TimeStamp) { TimeElapsed }
-Write-Host -ForegroundColor Blue "=========|| RUNNING PROCESSES"Write-Host ""
+Write-Host -ForegroundColor Blue "=========|| RUNNING PROCESSES"
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| Checking user permissions on running processes"
 Get-Process | Select-Object Path -Unique | ForEach-Object { Start-ACLCheck -Target $_.path }
+
+
+#TODO, vulnerable system process running that we have access to. 
 Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| System processes"
 Start-Process tasklist -ArgumentList '/v /fi "username eq system"' -Wait -NoNewWindow
+
+
+######################## SERVICES ########################
 Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| SERVICE path vulnerable check"
 Write-Host "Checking for vulnerable service .exe"
-
+# Gathers all services running and stopped, based on .exe and shows the AccessControlList
 $UniqueServices = @{}
 Get-WmiObject Win32_Service | Where-Object { $_.PathName -like '*.exe*' } | ForEach-Object {
   $Path = ($_.PathName -split '(?<=\.exe\b)')[0].Trim('"')
@@ -861,10 +1052,19 @@ Get-WmiObject Win32_Service | Where-Object { $_.PathName -like '*.exe*' } | ForE
 foreach ( $h in ($UniqueServices | Select-Object -Unique).GetEnumerator()) {
   Start-ACLCheck -Target $h.Name -ServiceName $h.Value
 }
+
+
+######################## UNQUOTED SERVICE PATH CHECK ############
 Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| Checking for Unquoted Service Paths"
+# All credit to Ivan-Sincek
+# https://github.com/ivan-sincek/unquoted-service-paths/blob/master/src/unquoted_service_paths_mini.ps1
+
 UnquotedServicePathCheck
+
+
+######################## REGISTRY SERVICE CONFIGURATION CHECK ###
 Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| Checking Service Registry Permissions"
@@ -874,9 +1074,15 @@ Get-ChildItem 'HKLM:\System\CurrentControlSet\services\' | ForEach-Object {
   $target = $_.Name.Replace("HKEY_LOCAL_MACHINE", "hklm:")
   Start-aclcheck -Target $target
 }
+
+
+######################## SCHEDULED TASKS ########################
 Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| SCHEDULED TASKS vulnerable check"
+#Scheduled tasks audit 
+
+
 Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| Testing access to c:\windows\system32\tasks"
@@ -910,18 +1116,21 @@ else {
     }
   }
 }
+
+
+######################## STARTUP APPLIICATIONS #########################
 Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| STARTUP APPLICATIONS Vulnerable Check"
 "Check if you can modify any binary that is going to be executed by admin or if you can impersonate a not found binary"
-Write-Host "https://book.hacktricks.wiki/en/windows-hardening/windows-local-privilege-escalation/index.html
+Write-Host "https://book.hacktricks.wiki/en/windows-hardening/windows-local-privilege-escalation/index.html#run-at-startup" -ForegroundColor Yellow
 
 @("C:\Documents and Settings\All Users\Start Menu\Programs\Startup",
   "C:\Documents and Settings\$env:Username\Start Menu\Programs\Startup", 
   "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup", 
   "$env:Appdata\Microsoft\Windows\Start Menu\Programs\Startup") | ForEach-Object {
   if (Test-Path $_) {
-    
+    # CheckACL of each top folder then each sub folder/file
     Start-ACLCheck $_
     Get-ChildItem -Recurse -Force -Path $_ | ForEach-Object {
       $SubItem = $_.FullName
@@ -930,7 +1139,10 @@ Write-Host "https://book.hacktricks.wiki/en/windows-hardening/windows-local-priv
       }
     }
   }
-}Write-Host ""
+}
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| STARTUP APPS Registry Check"
 
@@ -938,7 +1150,7 @@ Write-Host -ForegroundColor Blue "=========|| STARTUP APPS Registry Check"
   "registry::HKLM\Software\Microsoft\Windows\CurrentVersion\RunOnce",
   "registry::HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
   "registry::HKCU\Software\Microsoft\Windows\CurrentVersion\RunOnce") | ForEach-Object {
-  
+  # CheckACL of each Property Value found
   $ROPath = $_
   (Get-Item $_) | ForEach-Object {
     $ROProperty = $_.property
@@ -946,10 +1158,19 @@ Write-Host -ForegroundColor Blue "=========|| STARTUP APPS Registry Check"
       Start-ACLCheck ((Get-ItemProperty -Path $ROPath).$_ -split '(?<=\.exe\b)')[0].Trim('"')
     }
   }
-}Write-Host ""
+}
+
+#schtasks /query /fo TABLE /nh | findstr /v /i "disable deshab informa"
+
+
+######################## INSTALLED APPLICATIONS ########################
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| INSTALLED APPLICATIONS"
-Write-Host "Generating list of installed applications"Get-InstalledApplications
+Write-Host "Generating list of installed applications"
+
+#Get applications via Regsitry
+Get-InstalledApplications
 
 Write-Host ""
 if ($TimeStamp) { TimeElapsed }
@@ -957,13 +1178,19 @@ Write-Host -ForegroundColor Blue "=========|| LOOKING FOR BASH.EXE"
 Get-ChildItem C:\Windows\WinSxS\ -Filter "amd64_microsoft-windows-lxss-bash*" | ForEach-Object {
   Write-Host $((Get-ChildItem $_.FullName -Recurse -Filter "*bash.exe*").FullName)
 }
-@("bash.exe", "wsl.exe") | ForEach-Object { Write-Host $((Get-ChildItem C:\Windows\System32\ -Filter $_).FullName) }Write-Host ""
+@("bash.exe", "wsl.exe") | ForEach-Object { Write-Host $((Get-ChildItem C:\Windows\System32\ -Filter $_).FullName) }
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| LOOKING FOR SCCM CLIENT"
 $result = Get-WmiObject -Namespace "root\ccm\clientSDK" -Class CCM_Application -Property * -ErrorAction SilentlyContinue | Select-Object Name, SoftwareVersion
 if ($result) { $result }
 elseif (Test-Path 'C:\Windows\CCM\SCClient.exe') { Write-Host "SCCM Client found at C:\Windows\CCM\SCClient.exe" -ForegroundColor Cyan }
 else { Write-Host "Not Installed." }
+
+
+######################## NETWORK INFORMATION ########################
 Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| NETWORK INFORMATION"
@@ -977,27 +1204,48 @@ Get-Content "c:\windows\system32\drivers\etc\hosts"
 
 Write-Host ""
 if ($TimeStamp) { TimeElapsed }
-Write-Host -ForegroundColor Blue "=========|| IP INFORMATION"Write-Host ""
+Write-Host -ForegroundColor Blue "=========|| IP INFORMATION"
+
+# Get all v4 and v6 addresses
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| Ipconfig ALL"
-Start-Process ipconfig.exe -ArgumentList "/all" -Wait -NoNewWindowWrite-Host ""
+Start-Process ipconfig.exe -ArgumentList "/all" -Wait -NoNewWindow
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| DNS Cache"
 ipconfig /displaydns | Select-String "Record" | ForEach-Object { Write-Host $('{0}' -f $_) }
  
 Write-Host ""
 if ($TimeStamp) { TimeElapsed }
-Write-Host -ForegroundColor Blue "=========|| LISTENING PORTS"Start-Process NETSTAT.EXE -ArgumentList "-ano" -Wait -NoNewWindowWrite-Host ""
-if ($TimeStamp) { TimeElapsed }
-Write-Host -ForegroundColor Blue "=========|| ARP Table"Start-Process arp -ArgumentList "-A" -Wait -NoNewWindow
+Write-Host -ForegroundColor Blue "=========|| LISTENING PORTS"
+
+# running netstat as powershell is too slow to print to console
+Start-Process NETSTAT.EXE -ArgumentList "-ano" -Wait -NoNewWindow
+
 
 Write-Host ""
 if ($TimeStamp) { TimeElapsed }
-Write-Host -ForegroundColor Blue "=========|| Routes"Start-Process route -ArgumentList "print" -Wait -NoNewWindow
+Write-Host -ForegroundColor Blue "=========|| ARP Table"
+
+# Arp table info
+Start-Process arp -ArgumentList "-A" -Wait -NoNewWindow
 
 Write-Host ""
 if ($TimeStamp) { TimeElapsed }
-Write-Host -ForegroundColor Blue "=========|| Network Adapter info"Get-NetAdapter | ForEach-Object { 
+Write-Host -ForegroundColor Blue "=========|| Routes"
+
+# Route info
+Start-Process route -ArgumentList "print" -Wait -NoNewWindow
+
+Write-Host ""
+if ($TimeStamp) { TimeElapsed }
+Write-Host -ForegroundColor Blue "=========|| Network Adapter info"
+
+# Network Adapter info
+Get-NetAdapter | ForEach-Object { 
   Write-Host "----------"
   Write-Host $_.Name
   Write-Host $_.InterfaceDescription
@@ -1005,31 +1253,49 @@ Write-Host -ForegroundColor Blue "=========|| Network Adapter info"Get-NetAdapte
   Write-Host $_.Status
   Write-Host $_.MacAddress
   Write-Host "----------"
-} Write-Host ""
+} 
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
-Write-Host -ForegroundColor Blue "=========|| Checking for WiFi passwords"((netsh.exe wlan show profiles) -match '\s{2,}:\s').replace("    All User Profile     : ", "") | ForEach-Object {
+Write-Host -ForegroundColor Blue "=========|| Checking for WiFi passwords"
+# Select all wifi adapters, then pull the SSID along with the password
+
+((netsh.exe wlan show profiles) -match '\s{2,}:\s').replace("    All User Profile     : ", "") | ForEach-Object {
   netsh wlan show profile name="$_" key=clear 
-}Write-Host ""
+}
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| Enabled firewall rules - displaying command only - it can overwrite the display buffer"
-Write-Host -ForegroundColor Blue "=========|| show all rules with: netsh advfirewall firewall show rule dir=in name=all"Write-Host ""
+Write-Host -ForegroundColor Blue "=========|| show all rules with: netsh advfirewall firewall show rule dir=in name=all"
+# Route info
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| SMB SHARES"
 Write-Host "Will enumerate SMB Shares and Access if any are available" 
 
 Get-SmbShare | Get-SmbShareAccess | ForEach-Object {
   $SMBShareObject = $_
-
+# see line 70 for explanation of what this does
   whoami.exe /groups /fo csv | select-object -skip 2 | ConvertFrom-Csv -Header 'group name' | Select-Object -ExpandProperty 'group name' | ForEach-Object {
     if ($SMBShareObject.AccountName -like $_ -and ($SMBShareObject.AccessRight -like "Full" -or "Change") -and $SMBShareObject.AccessControlType -like "Allow" ) {
       Write-Host -ForegroundColor red "$($SMBShareObject.AccountName) has $($SMBShareObject.AccessRight) to $($SMBShareObject.Name)"
     }
   }
 }
+
+
+######################## USER INFO ########################
 Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| USER INFO"
 Write-Host "== || Generating List of all Local Administrators, Users and Backup Operators (if any exist)"
+
+# Code has been modified to accomodate for any language by filtering only on the output and not looking for a string of text
+# Foreach loop to get all local groups, then examine each group's members.
 Get-LocalGroup | ForEach-Object {
   "`n Group: $($_.Name) `n"
   if(Get-LocalGroupMember -name $_.Name){
@@ -1038,22 +1304,31 @@ Get-LocalGroup | ForEach-Object {
   else{
     "     {GROUP EMPTY}"
   }
-}Write-Host ""
+}
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| USER DIRECTORY ACCESS CHECK"
 Get-ChildItem C:\Users\* | ForEach-Object {
   if (Get-ChildItem $_.FullName -ErrorAction SilentlyContinue) {
     Write-Host -ForegroundColor red "Read Access to $($_.FullName)"
   }
-}Write-Host ""
+}
+
+#Whoami 
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| WHOAMI INFO"
 Write-Host ""
 if ($TimeStamp) { TimeElapsed }
-Write-Host -ForegroundColor Blue "=========|| Check Token access here: https://book.hacktricks.wiki/en/windows-hardening/windows-local-privilege-escalation/privilege-escalation-abusing-tokens.html
+Write-Host -ForegroundColor Blue "=========|| Check Token access here: https://book.hacktricks.wiki/en/windows-hardening/windows-local-privilege-escalation/privilege-escalation-abusing-tokens.html#abusing-tokens" -ForegroundColor yellow
 Write-Host -ForegroundColor Blue "=========|| Check if you are inside the Administrators group or if you have enabled any token that can be use to escalate privileges like SeImpersonatePrivilege, SeAssignPrimaryPrivilege, SeTcbPrivilege, SeBackupPrivilege, SeRestorePrivilege, SeCreateTokenPrivilege, SeLoadDriverPrivilege, SeTakeOwnershipPrivilege, SeDebbugPrivilege"
-Write-Host "https://book.hacktricks.wiki/en/windows-hardening/windows-local-privilege-escalation/index.html
-Start-Process whoami.exe -ArgumentList "/all" -Wait -NoNewWindowWrite-Host ""
+Write-Host "https://book.hacktricks.wiki/en/windows-hardening/windows-local-privilege-escalation/index.html#users--groups" -ForegroundColor Yellow
+Start-Process whoami.exe -ArgumentList "/all" -Wait -NoNewWindow
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| Cloud Credentials Check"
 $Users = (Get-ChildItem C:\Users).Name
@@ -1067,13 +1342,19 @@ foreach ($u in $users) {
   $CCreds | ForEach-Object {
     if (Test-Path "c:\Users\$u\$_") { Write-Host "$_ found!" -ForegroundColor Red }
   }
-}Write-Host ""
+}
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| APPcmd Check"
 if (Test-Path ("$Env:SystemRoot\System32\inetsrv\appcmd.exe")) {
-  Write-Host "https://book.hacktricks.wiki/en/windows-hardening/windows-local-privilege-escalation/index.html
+  Write-Host "https://book.hacktricks.wiki/en/windows-hardening/windows-local-privilege-escalation/index.html#appcmdexe" -ForegroundColor Yellow
   Write-Host "$Env:SystemRoot\System32\inetsrv\appcmd.exe exists!" -ForegroundColor Red
-}Write-Host ""
+}
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| OpenVPN Credentials Check"
 
@@ -1093,7 +1374,10 @@ if ($Keys) {
  
     Write-Host ([System.Text.Encoding]::Unicode.GetString($decryptedbytes))
   }
-}Write-Host ""
+}
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| PowerShell History (Password Search Only)"
 
@@ -1103,31 +1387,46 @@ Write-Host $(Get-Content (Get-PSReadLineOption).HistorySavePath | Select-String 
 
 Write-Host "=|| AppData PSReadline Console History "
 Write-Host "=|| To see all history, run this command: Get-Content $env:USERPROFILE\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadline\ConsoleHost_history.txt"
-Write-Host $(Get-Content "$env:USERPROFILE\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadline\ConsoleHost_history.txt" | Select-String pa)Write-Host "=|| PowerShell default transcript history check "
+Write-Host $(Get-Content "$env:USERPROFILE\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadline\ConsoleHost_history.txt" | Select-String pa)
+
+
+Write-Host "=|| PowerShell default transcript history check "
 if (Test-Path $env:SystemDrive\transcripts\) { "Default transcripts found at $($env:SystemDrive)\transcripts\" }
+
+
+# Enumerating Environment Variables
 Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| ENVIRONMENT VARIABLES "
 Write-Host "Maybe you can take advantage of modifying/creating a binary in some of the following locations"
 Write-Host "PATH variable entries permissions - place binary or DLL to execute instead of legitimate"
-Write-Host "https://book.hacktricks.wiki/en/windows-hardening/windows-local-privilege-escalation/index.html
+Write-Host "https://book.hacktricks.wiki/en/windows-hardening/windows-local-privilege-escalation/index.html#dll-hijacking" -ForegroundColor Yellow
 
-Get-ChildItem env: | Format-Table -WrapWrite-Host ""
+Get-ChildItem env: | Format-Table -Wrap
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| Sticky Notes Check"
 if (Test-Path "C:\Users\$env:USERNAME\AppData\Local\Packages\Microsoft.MicrosoftStickyNotes*\LocalState\plum.sqlite") {
   Write-Host "Sticky Notes database found. Could have credentials in plain text: "
   Write-Host "C:\Users\$env:USERNAME\AppData\Local\Packages\Microsoft.MicrosoftStickyNotes*\LocalState\plum.sqlite"
 }
+
+# Check for Cached Credentials
+# https://community.idera.com/database-tools/powershell/powertips/b/tips/posts/getting-cached-credentials
 Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| Cached Credentials Check"
-Write-Host "https://book.hacktricks.wiki/en/windows-hardening/windows-local-privilege-escalation/index.html
-cmdkey.exe /listWrite-Host ""
+Write-Host "https://book.hacktricks.wiki/en/windows-hardening/windows-local-privilege-escalation/index.html#windows-vault" -ForegroundColor Yellow 
+cmdkey.exe /list
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| Checking for DPAPI RPC Master Keys"
 Write-Host "Use the Mimikatz 'dpapi::masterkey' module with appropriate arguments (/rpc) to decrypt"
-Write-Host "https://book.hacktricks.wiki/en/windows-hardening/windows-local-privilege-escalation/index.html
+Write-Host "https://book.hacktricks.wiki/en/windows-hardening/windows-local-privilege-escalation/index.html#dpapi" -ForegroundColor Yellow
 
 $appdataRoaming = "C:\Users\$env:USERNAME\AppData\Roaming\Microsoft\"
 $appdataLocal = "C:\Users\$env:USERNAME\AppData\Local\Microsoft\"
@@ -1142,31 +1441,49 @@ if ( Test-Path "$appdataLocal\Protect\") {
   Get-ChildItem -Path "$appdataLocal\Protect\" -Force | ForEach-Object {
     Write-Host $_.FullName
   }
-}Write-Host ""
+}
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| Checking for DPAPI Cred Master Keys"
 Write-Host "Use the Mimikatz 'dpapi::cred' module with appropriate /masterkey to decrypt" 
 Write-Host "You can also extract many DPAPI masterkeys from memory with the Mimikatz 'sekurlsa::dpapi' module" 
-Write-Host "https://book.hacktricks.wiki/en/windows-hardening/windows-local-privilege-escalation/index.html
+Write-Host "https://book.hacktricks.wiki/en/windows-hardening/windows-local-privilege-escalation/index.html#dpapi" -ForegroundColor Yellow
 
 if ( Test-Path "$appdataRoaming\Credentials\") {
   Get-ChildItem -Path "$appdataRoaming\Credentials\" -Force
 }
 if ( Test-Path "$appdataLocal\Credentials\") {
   Get-ChildItem -Path "$appdataLocal\Credentials\" -Force
-}Write-Host ""
+}
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| Current Logged on Users"
-try { quser }catch { Write-Host "'quser' command not not present on system" } Write-Host ""
+try { quser }catch { Write-Host "'quser' command not not present on system" } 
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| Remote Sessions"
-try { qwinsta } catch { Write-Host "'qwinsta' command not present on system" }Write-Host ""
+try { qwinsta } catch { Write-Host "'qwinsta' command not present on system" }
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| Kerberos tickets (does require admin to interact)"
-try { klist } catch { Write-Host "No active sessions" }Write-Host ""
+try { klist } catch { Write-Host "No active sessions" }
+
+
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| Printing ClipBoard (if any)"
-Get-ClipBoardTextWrite-Host ""
+Get-ClipBoardText
+
+######################## File/Credentials check ########################
+Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| Unattended Files Check"
 @("C:\Windows\sysprep\sysprep.xml",
@@ -1184,6 +1501,9 @@ Write-Host -ForegroundColor Blue "=========|| Unattended Files Check"
     Write-Host "$_ found."
   }
 }
+
+
+######################## GROUP POLICY RELATED CHECKS ########################
 Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| SAM / SYSTEM Backup Checks"
@@ -1217,20 +1537,26 @@ Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| Recycle Bin TIP:"
 Write-Host "If credentials are found in the recycle bin, tool from nirsoft may assist: http://www.nirsoft.net/password_recovery_tools.html" -ForegroundColor Yellow
+
+######################## File/Folder Check ########################
+
 Write-Host ""
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========||  Password Check in Files/Folders"
+
+# Looking through the entire computer for passwords
+# Also looks for MCaffee site list while looping through the drives.
 if ($TimeStamp) { TimeElapsed }
 Write-Host -ForegroundColor Blue "=========|| Password Check. Starting at root of each drive. This will take some time. Like, grab a coffee or tea kinda time."
 Write-Host -ForegroundColor Blue "=========|| Looking through each drive, searching for $fileExtensions"
-
+# Check if the Excel com object is installed, if so, look through files, if not, just notate if a file has "user" or "password in name"
 try { 
   New-Object -ComObject Excel.Application | Out-Null
   $ReadExcel = $true 
 }
 catch {
   $ReadExcel = $false
-  if($Hehcel) {
+  if($Excel) {
     Write-Host -ForegroundColor Yellow "Host does not have Excel COM object, will still point out excel files when found."  
   }
 }
@@ -1238,9 +1564,9 @@ $Drives.Root | ForEach-Object {
   $Drive = $_
   Get-ChildItem $Drive -Recurse -Include $fileExtensions -ErrorAction SilentlyContinue -Force | ForEach-Object {
     $path = $_
-    
+    #Exclude files/folders with 'lang' in the name
     if ($Path.FullName | select-string "(?i).*lang.*"){
-      
+      #Write-Host "$($_.FullName) found!" -ForegroundColor red
     }
     if($Path.FullName | Select-String "(?i).:\\.*\\.*Pass.*"){
       write-host -ForegroundColor Blue "$($path.FullName) contains the word 'pass'"
@@ -1248,16 +1574,16 @@ $Drives.Root | ForEach-Object {
     if($Path.FullName | Select-String ".:\\.*\\.*user.*" ){
       Write-Host -ForegroundColor Blue "$($path.FullName) contains the word 'user' -excluding the 'users' directory"
     }
-    
+    # If path name ends with common excel extensions
     elseif ($Path.FullName | Select-String ".*\.xls",".*\.xlsm",".*\.xlsx") {
-      if ($ReadExcel -and $Hehcel) {
+      if ($ReadExcel -and $Excel) {
         Search-Excel -Source $Path.FullName -SearchText "user"
         Search-Excel -Source $Path.FullName -SearchText "pass"
       }
     }
     else {
       if ($path.Length -gt 0) {
-        
+        # Write-Host -ForegroundColor Blue "Path name matches extension search: $path"
       }
       if ($path.FullName | Select-String "(?i).*SiteList\.xml") {
         Write-Host "Possible MCaffee Site List Found: $($_.FullName)"
@@ -1275,11 +1601,14 @@ $Drives.Root | ForEach-Object {
     }  
   }
 }
-Write-Host -ForegroundColor Blue "=========|| Registry Password Check"
 
+######################## Registry Password Check ########################
+
+Write-Host -ForegroundColor Blue "=========|| Registry Password Check"
+# Looking through the entire registry for passwords
 Write-Host "This will take some time. Won't you have a pepsi?"
 $regPath = @("registry::\HKEY_CURRENT_USER\", "registry::\HKEY_LOCAL_MACHINE\")
-
+# Search for the string in registry values and properties
 foreach ($r in $regPath) {
 (Get-ChildItem -Path $r -Recurse -Force -ErrorAction SilentlyContinue) | ForEach-Object {
     $property = $_.property
